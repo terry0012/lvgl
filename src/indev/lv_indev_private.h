@@ -132,6 +132,9 @@ struct _lv_indev_t {
     /**< Key remapping callback */
     lv_indev_key_remap_cb_t key_remap_cb;
 
+    /**< Custom scroll curve configuration for this input device */
+    lv_scroll_curve_config_t * scroll_curve_config;
+
 #if LV_USE_GESTURE_RECOGNITION
     lv_indev_gesture_recognizer_t recognizers[LV_INDEV_GESTURE_CNT];
     lv_indev_gesture_type_t cur_gesture;

@@ -307,45 +307,75 @@ void lv_obj_scroll_by_bounded(lv_obj_t * obj, int32_t dx, int32_t dy, lv_anim_en
     }
 }
 
+/**
+ * Scroll by with custom animation curve (internal function)
+ * @param obj pointer to an object
+ * @param dx pixels to scroll horizontally
+ * @param dy pixels to scroll vertically
+ * @param path_cb animation path callback
+ * @param bezier_param bezier parameters (can be NULL)
+ * @param duration animation duration in ms
+ */
+void lv_obj_scroll_by_with_curve(lv_obj_t * obj, int32_t dx, int32_t dy,
+                                 lv_anim_path_cb_t path_cb,
+                                 lv_anim_bezier3_para_t * bezier_param,
+                                 uint32_t duration)
+{
+    if(dx == 0 && dy == 0) return;
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, obj);
+    lv_anim_set_deleted_cb(&a, scroll_end_cb);
+    lv_anim_set_duration(&a, duration);
+    lv_anim_set_path_cb(&a, path_cb);
+    if(path_cb == lv_anim_path_custom_bezier3 && bezier_param) {
+        a.parameter.bezier3 = *bezier_param;
+    }
+
+    if(dx) {
+        int32_t sx = lv_obj_get_scroll_x(obj);
+        lv_anim_set_values(&a, -sx, -sx + dx);
+        lv_anim_set_exec_cb(&a, scroll_x_anim);
+
+        lv_result_t res;
+        res = lv_obj_send_event(obj, LV_EVENT_SCROLL_BEGIN, &a);
+        if(res != LV_RESULT_OK) return;
+        lv_anim_start(&a);
+    }
+
+    if(dy) {
+        int32_t sy = lv_obj_get_scroll_y(obj);
+        lv_anim_set_values(&a, -sy, -sy + dy);
+        lv_anim_set_exec_cb(&a, scroll_y_anim);
+
+        lv_result_t res;
+        res = lv_obj_send_event(obj, LV_EVENT_SCROLL_BEGIN, &a);
+        if(res != LV_RESULT_OK) return;
+        lv_anim_start(&a);
+    }
+}
+
 void lv_obj_scroll_by(lv_obj_t * obj, int32_t dx, int32_t dy, lv_anim_enable_t anim_en)
 {
     if(dx == 0 && dy == 0) return;
     if(anim_en) {
         lv_display_t * d = lv_obj_get_display(obj);
-        lv_anim_t a;
-        lv_anim_init(&a);
-        lv_anim_set_var(&a, obj);
-        lv_anim_set_deleted_cb(&a, scroll_end_cb);
 
+        /* Calculate default animation duration */
+        uint32_t t_x = 0, t_y = 0;
         if(dx) {
-            uint32_t t = lv_anim_speed_clamped((lv_display_get_horizontal_resolution(d)) >> 1, SCROLL_ANIM_TIME_MIN,
-                                               SCROLL_ANIM_TIME_MAX);
-            lv_anim_set_duration(&a, t);
-            int32_t sx = lv_obj_get_scroll_x(obj);
-            lv_anim_set_values(&a, -sx, -sx + dx);
-            lv_anim_set_exec_cb(&a, scroll_x_anim);
-            lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-
-            lv_result_t res;
-            res = lv_obj_send_event(obj, LV_EVENT_SCROLL_BEGIN, &a);
-            if(res != LV_RESULT_OK) return;
-            lv_anim_start(&a);
+            t_x = lv_anim_speed_clamped((lv_display_get_horizontal_resolution(d)) >> 1, SCROLL_ANIM_TIME_MIN,
+                                        SCROLL_ANIM_TIME_MAX);
         }
-
         if(dy) {
-            uint32_t t = lv_anim_speed_clamped((lv_display_get_vertical_resolution(d)) >> 1, SCROLL_ANIM_TIME_MIN,
-                                               SCROLL_ANIM_TIME_MAX);
-            lv_anim_set_duration(&a, t);
-            int32_t sy = lv_obj_get_scroll_y(obj);
-            lv_anim_set_values(&a, -sy, -sy + dy);
-            lv_anim_set_exec_cb(&a,  scroll_y_anim);
-            lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-
-            lv_result_t res;
-            res = lv_obj_send_event(obj, LV_EVENT_SCROLL_BEGIN, &a);
-            if(res != LV_RESULT_OK) return;
-            lv_anim_start(&a);
+            t_y = lv_anim_speed_clamped((lv_display_get_vertical_resolution(d)) >> 1, SCROLL_ANIM_TIME_MIN,
+                                        SCROLL_ANIM_TIME_MAX);
         }
+        uint32_t duration = LV_MAX(t_x, t_y);
+
+        /* Use default ease_out curve and call the internal function */
+        lv_obj_scroll_by_with_curve(obj, dx, dy, lv_anim_path_ease_out, NULL, duration);
     }
     else {
         /*Remove pending animations*/

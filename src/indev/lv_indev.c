@@ -175,6 +175,12 @@ void lv_indev_delete(lv_indev_t * indev)
     }
 #endif
 
+    /* Clean up scroll curve configuration */
+    if(indev->scroll_curve_config) {
+        lv_free(indev->scroll_curve_config);
+        indev->scroll_curve_config = NULL;
+    }
+
     /*Free the memory of the input device*/
     lv_free(indev);
 }

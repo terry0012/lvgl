@@ -32,6 +32,9 @@ static int32_t elastic_diff(lv_obj_t * scroll_obj, int32_t diff, int32_t scroll_
                             lv_dir_t dir);
 static void has_more_snap_points(lv_obj_t * scroll_obj, lv_dir_t dir, bool * has_start_snap, bool * has_end_snap);
 
+/* Custom scroll curve functions */
+static lv_scroll_curve_config_t * get_scroll_curve_config(lv_indev_t * indev);
+
 /**********************
  *  STATIC VARIABLES
  **********************/
@@ -127,6 +130,7 @@ void lv_indev_scroll_throw_handler(lv_indev_t * indev)
     if(scroll_obj == NULL) return;
     if(indev->pointer.scroll_dir == LV_DIR_NONE) return;
 
+    /* Original implementation - custom curves are applied in lv_obj_scroll_by */
     int32_t scroll_throw = indev->scroll_throw;
 
     if(lv_obj_has_flag(scroll_obj, LV_OBJ_FLAG_SCROLL_MOMENTUM) == false) {
@@ -159,7 +163,18 @@ void lv_indev_scroll_throw_handler(lv_indev_t * indev)
             indev->pointer.scroll_throw_vect.y = 0;
             scroll_limit_diff(indev, NULL, &diff_y);
             int32_t y = find_snap_point_y(scroll_obj, LV_COORD_MIN, LV_COORD_MAX, diff_y);
-            lv_obj_scroll_by(scroll_obj, 0, diff_y + y, LV_ANIM_ON);
+
+            /* Use custom snap curve if configured */
+            lv_scroll_curve_config_t * config = get_scroll_curve_config(indev);
+            if(config && config->snap_path_cb) {
+                lv_obj_scroll_by_with_curve(scroll_obj, 0, diff_y + y,
+                                            config->snap_path_cb,
+                                            &config->snap_bezier,
+                                            config->snap_duration);
+            }
+            else {
+                lv_obj_scroll_by(scroll_obj, 0, diff_y + y, LV_ANIM_ON);
+            }
             if(indev->reset_query) return;
         }
     }
@@ -185,7 +200,18 @@ void lv_indev_scroll_throw_handler(lv_indev_t * indev)
             indev->pointer.scroll_throw_vect.x = 0;
             scroll_limit_diff(indev, &diff_x, NULL);
             int32_t x = find_snap_point_x(scroll_obj, LV_COORD_MIN, LV_COORD_MAX, diff_x);
-            lv_obj_scroll_by(scroll_obj, x + diff_x, 0, LV_ANIM_ON);
+
+            /* Use custom snap curve if configured */
+            lv_scroll_curve_config_t * config = get_scroll_curve_config(indev);
+            if(config && config->snap_path_cb) {
+                lv_obj_scroll_by_with_curve(scroll_obj, x + diff_x, 0,
+                                            config->snap_path_cb,
+                                            &config->snap_bezier,
+                                            config->snap_duration);
+            }
+            else {
+                lv_obj_scroll_by(scroll_obj, x + diff_x, 0, LV_ANIM_ON);
+            }
             if(indev->reset_query) return;
         }
     }
@@ -198,12 +224,30 @@ void lv_indev_scroll_throw_handler(lv_indev_t * indev)
             int32_t st = lv_obj_get_scroll_top(scroll_obj);
             int32_t sb = lv_obj_get_scroll_bottom(scroll_obj);
             if(st > 0 || sb > 0) {
+                /* Use custom snap curve for bounce-back if configured */
+                lv_scroll_curve_config_t * config = get_scroll_curve_config(indev);
                 if(st < 0) {
-                    lv_obj_scroll_by(scroll_obj, 0, st, LV_ANIM_ON);
+                    if(config && config->snap_path_cb) {
+                        lv_obj_scroll_by_with_curve(scroll_obj, 0, st,
+                                                    config->snap_path_cb,
+                                                    &config->snap_bezier,
+                                                    config->snap_duration);
+                    }
+                    else {
+                        lv_obj_scroll_by(scroll_obj, 0, st, LV_ANIM_ON);
+                    }
                     if(indev->reset_query) return;
                 }
                 else if(sb < 0) {
-                    lv_obj_scroll_by(scroll_obj, 0, -sb, LV_ANIM_ON);
+                    if(config && config->snap_path_cb) {
+                        lv_obj_scroll_by_with_curve(scroll_obj, 0, -sb,
+                                                    config->snap_path_cb,
+                                                    &config->snap_bezier,
+                                                    config->snap_duration);
+                    }
+                    else {
+                        lv_obj_scroll_by(scroll_obj, 0, -sb, LV_ANIM_ON);
+                    }
                     if(indev->reset_query) return;
                 }
             }
@@ -214,12 +258,30 @@ void lv_indev_scroll_throw_handler(lv_indev_t * indev)
             int32_t sl = lv_obj_get_scroll_left(scroll_obj);
             int32_t sr = lv_obj_get_scroll_right(scroll_obj);
             if(sl > 0 || sr > 0) {
+                /* Use custom snap curve for bounce-back if configured */
+                lv_scroll_curve_config_t * config = get_scroll_curve_config(indev);
                 if(sl < 0) {
-                    lv_obj_scroll_by(scroll_obj, sl, 0, LV_ANIM_ON);
+                    if(config && config->snap_path_cb) {
+                        lv_obj_scroll_by_with_curve(scroll_obj, sl, 0,
+                                                    config->snap_path_cb,
+                                                    &config->snap_bezier,
+                                                    config->snap_duration);
+                    }
+                    else {
+                        lv_obj_scroll_by(scroll_obj, sl, 0, LV_ANIM_ON);
+                    }
                     if(indev->reset_query) return;
                 }
                 else if(sr < 0) {
-                    lv_obj_scroll_by(scroll_obj, -sr, 0, LV_ANIM_ON);
+                    if(config && config->snap_path_cb) {
+                        lv_obj_scroll_by_with_curve(scroll_obj, -sr, 0,
+                                                    config->snap_path_cb,
+                                                    &config->snap_bezier,
+                                                    config->snap_duration);
+                    }
+                    else {
+                        lv_obj_scroll_by(scroll_obj, -sr, 0, LV_ANIM_ON);
+                    }
                     if(indev->reset_query) return;
                 }
             }
@@ -438,6 +500,15 @@ lv_obj_t * lv_indev_find_scroll_obj(lv_indev_t * indev)
 /**********************
  *   STATIC FUNCTIONS
  **********************/
+
+/**
+ * Get scroll curve configuration from input device
+ */
+static lv_scroll_curve_config_t * get_scroll_curve_config(lv_indev_t * indev)
+{
+    if(indev == NULL) return NULL;
+    return indev->scroll_curve_config;
+}
 
 static void init_scroll_limits(lv_indev_t * indev)
 {
@@ -765,4 +836,99 @@ static void has_more_snap_points(lv_obj_t * scroll_obj, lv_dir_t dir, bool * has
         d = find_snap_point_y(scroll_obj, LV_COORD_MIN, y - 1, 0);
         if(d == LV_COORD_MAX) *has_start_snap = false;
     }
+}
+
+/**********************
+ *   GLOBAL FUNCTIONS - API
+ **********************/
+
+void lv_indev_set_scroll_curve(lv_indev_t * indev, const lv_scroll_curve_config_t * config)
+{
+    LV_ASSERT_NULL(indev);
+
+    if(config == NULL) {
+        if(indev->scroll_curve_config != NULL) {
+            lv_free(indev->scroll_curve_config);
+            indev->scroll_curve_config = NULL;
+        }
+        return;
+    }
+
+    if(indev->scroll_curve_config == NULL) {
+        indev->scroll_curve_config = lv_malloc(sizeof(lv_scroll_curve_config_t));
+        LV_ASSERT_MALLOC(indev->scroll_curve_config);
+    }
+
+    lv_memcpy(indev->scroll_curve_config, config, sizeof(lv_scroll_curve_config_t));
+}
+
+lv_scroll_curve_config_t * lv_indev_get_scroll_curve(lv_indev_t * indev)
+{
+    LV_ASSERT_NULL(indev);
+    return indev->scroll_curve_config;
+}
+
+lv_scroll_curve_config_t lv_scroll_curve_create_default(lv_anim_path_cb_t throw_path_cb,
+                                                        lv_anim_path_cb_t snap_path_cb)
+{
+    lv_scroll_curve_config_t config;
+    lv_memzero(&config, sizeof(config));
+
+    /* Set animation path callbacks - NULL means use default LVGL behavior */
+    config.throw_path_cb = throw_path_cb;
+    config.snap_path_cb = snap_path_cb;
+
+    /* Default durations */
+    config.throw_max_duration = 800;
+    config.throw_min_velocity_threshold = 12;
+    config.snap_duration = 300;
+
+    /* Initialize bezier parameters to default values (not used unless bezier path is set) */
+    lv_memzero(&config.throw_bezier, sizeof(config.throw_bezier));
+    lv_memzero(&config.snap_bezier, sizeof(config.snap_bezier));
+
+    return config;
+}
+
+lv_scroll_curve_config_t lv_scroll_curve_create_bezier(int16_t throw_x1, int16_t throw_y1, int16_t throw_x2,
+                                                       int16_t throw_y2,
+                                                       int16_t snap_x1, int16_t snap_y1, int16_t snap_x2, int16_t snap_y2)
+{
+    lv_scroll_curve_config_t config;
+    lv_memzero(&config, sizeof(config));
+
+    /* Set bezier path callbacks */
+    config.throw_path_cb = lv_anim_path_custom_bezier3;
+    config.snap_path_cb = lv_anim_path_custom_bezier3;
+
+    /* Set bezier parameters */
+    config.throw_bezier.x1 = throw_x1;
+    config.throw_bezier.y1 = throw_y1;
+    config.throw_bezier.x2 = throw_x2;
+    config.throw_bezier.y2 = throw_y2;
+
+    config.snap_bezier.x1 = snap_x1;
+    config.snap_bezier.y1 = snap_y1;
+    config.snap_bezier.x2 = snap_x2;
+    config.snap_bezier.y2 = snap_y2;
+
+    /* Default durations */
+    config.throw_max_duration = 800;
+    config.throw_min_velocity_threshold = 12;
+    config.snap_duration = 300;
+
+    return config;
+}
+
+lv_scroll_curve_config_t lv_scroll_curve_create_custom(lv_anim_path_cb_t throw_path_cb,
+                                                       lv_anim_path_cb_t snap_path_cb,
+                                                       uint32_t throw_duration,
+                                                       uint32_t snap_duration)
+{
+    lv_scroll_curve_config_t config = lv_scroll_curve_create_default(throw_path_cb, snap_path_cb);
+
+    config.throw_max_duration = throw_duration;
+    config.snap_duration = snap_duration;
+
+    return config;
 }
