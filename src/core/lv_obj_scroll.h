@@ -206,6 +206,23 @@ void lv_obj_scroll_by(lv_obj_t * obj, int32_t dx, int32_t dy, lv_anim_enable_t a
 void lv_obj_scroll_by_bounded(lv_obj_t * obj, int32_t dx, int32_t dy, lv_anim_enable_t anim_en);
 
 /**
+ * Scroll with throw animation (3-phase: throw, overshoot, bounce back).
+ * Uses configuration from indev's scroll_throw_config.
+ * @param obj           pointer to scrollable Widget
+ * @param throw_dist_x  predicted throw distance in scroll_by direction (horizontal)
+ * @param throw_dist_y  predicted throw distance in scroll_by direction (vertical)
+ * @param config        pointer to scroll throw configuration (from indev)
+ */
+void lv_obj_scroll_throw(lv_obj_t * obj, int32_t throw_dist_x, int32_t throw_dist_y,
+                         lv_anim_scroll_throw_config_t * config);
+
+/**
+ * Stop ongoing scroll animations on the object.
+ * @param obj       pointer to scrollable Widget
+ */
+void lv_obj_scroll_anim_stop(lv_obj_t * obj);
+
+/**
  * Scroll to given coordinate on Widget.
  * `x` and `y` will be limited internally to allow scrolling only on the content area.
  * @param obj       pointer to scrollable Widget to scroll

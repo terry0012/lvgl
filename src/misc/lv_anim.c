@@ -15,6 +15,7 @@
 #include "lv_math.h"
 #include "../stdlib/lv_mem.h"
 #include "../stdlib/lv_string.h"
+#include <math.h>
 
 /*********************
  *      DEFINES
@@ -430,6 +431,113 @@ lv_value_precise_t lv_anim_path_custom_bezier3(const lv_anim_t * a)
     return lv_anim_path_cubic_bezier(a, para->x1, para->y1, para->x2, para->y2);
 }
 
+lv_value_precise_t lv_anim_path_expo_decay(const lv_anim_t * a)
+{
+    /*
+     * True exponential decay matching original LVGL scroll throw: v *= 0.9 per frame.
+     *
+     * Original LVGL applies v *= scroll_throw/256 each timer tick (default scroll_throw=10%,
+     * so decay_factor = (256-10)/256 ≈ 0.961 per tick at ~30fps).
+     * The position integral: s(t) = S_total * (1 - decay^(t/dt))
+     * where S_total = v0 * dt / (1 - decay).
+     *
+     * We use act_time (ms) directly. With frame_period = 33ms (30fps) and
+     * decay_per_frame = 0.9:
+     *   decay(t) = 0.9^(t / 33)
+     *   position(t) = S * (1 - 0.9^(t/33))
+     *
+     * Since start_value and end_value encode the full range (end_value = start + S_total),
+     * we compute: result = start + (end - start) * (1 - 0.9^(t/33))
+     *
+     * For is_finished_cb termination: animation ends when remaining < 1 pixel.
+     */
+    if(a->act_time <= 0) return a->start_value;
+
+    lv_value_precise_t t = (lv_value_precise_t)a->act_time;
+    lv_value_precise_t frame_period = 33.0f;  /* ~30fps, matching LV_DEF_REFR_PERIOD */
+    lv_value_precise_t decay_per_frame = 0.9f;
+
+    /* Number of frames elapsed (fractional) */
+    lv_value_precise_t n_frames = t / frame_period;
+
+    /* remaining_frac = 0.9^n_frames using expf for smooth interpolation */
+    lv_value_precise_t remaining_frac;
+    /* ln(0.9) ≈ -0.10536 */
+    remaining_frac = expf(-0.10536f * n_frames);
+
+    LV_UNUSED(decay_per_frame);
+
+    /* progress = 1 - remaining */
+    lv_value_precise_t progress = 1.0f - remaining_frac;
+    if(progress > 1.0f) progress = 1.0f;
+
+    return a->start_value + (a->end_value - a->start_value) * progress;
+}
+
+bool lv_anim_path_expo_decay_is_finished(const lv_anim_t * a)
+{
+    /* Convergence check: finished when remaining distance < 1 pixel */
+    lv_value_precise_t range = a->end_value - a->start_value;
+    if(range < 0) range = -range;
+    if(range < 1.0f) return true;
+
+    lv_value_precise_t t = (lv_value_precise_t)a->act_time;
+    lv_value_precise_t n_frames = t / 33.0f;
+    lv_value_precise_t remaining_frac = expf(-0.10536f * n_frames);
+    lv_value_precise_t remaining_dist = range * remaining_frac;
+
+    return remaining_dist < 1.0f;
+}
+
+lv_value_precise_t lv_anim_path_scroll_throw(const lv_anim_t * a)
+{
+    lv_anim_scroll_throw_config_t * cfg = (lv_anim_scroll_throw_config_t *)a->user_data;
+    if(cfg == NULL) return a->end_value;
+
+    uint32_t t = a->act_time;
+    lv_anim_t virtual_a = *a;
+
+    if(cfg->throw_end_time > 0 && t < cfg->throw_end_time) {
+        /* Phase 1: Throw deceleration to boundary — always use ease_out for bounded phase */
+        virtual_a.start_value = a->start_value;
+        virtual_a.end_value = cfg->boundary_value;
+        virtual_a.duration = cfg->throw_end_time;
+        virtual_a.act_time = t;
+        return lv_anim_path_ease_out(&virtual_a);
+    }
+    else {
+        /* Phase 2: Overshoot peak then springback to boundary */
+        uint32_t phase2_start = cfg->throw_end_time;
+        uint32_t phase2_dur = a->duration - phase2_start;
+        if(phase2_dur == 0) phase2_dur = 1;
+        uint32_t local_t = t - phase2_start;
+
+        /* Map to 0..1024 range */
+        int32_t t_norm = (int32_t)((uint32_t)local_t * 1024 / phase2_dur);
+        if(t_norm > 1024) t_norm = 1024;
+
+        /* Shifted parabola peaking at 1/3 of duration, returning to 0 at t=1.0
+         * f(t) = t * (2-3t) * (3/2), normalized so f(1/3) = 1.0
+         *
+         * In fixed-point (t_norm 0..1024):
+         *   two_minus_3t = 2*1024 - 3*t_norm
+         *   frac = t_norm * two_minus_3t * 3 / (2 * 1024^2)
+         *
+         * Verify at t_norm=341 (≈1/3):
+         *   two_minus_3t = 2048 - 1023 = 1025
+         *   341 * 1025 * 3 = 1,048,575
+         *   >> 10 = 1023 ≈ 1024 ✓ */
+        int32_t two_minus_3t = 2048 - 3 * t_norm;
+        if(two_minus_3t < 0) two_minus_3t = 0;
+        int32_t overshoot_frac = (int32_t)((int64_t)t_norm * two_minus_3t * 3 >> 10);
+        if(overshoot_frac < 0) overshoot_frac = 0;
+        if(overshoot_frac > 1024) overshoot_frac = 1024;
+
+        int32_t overshoot_delta = cfg->overshoot_peak - cfg->boundary_value;
+        return cfg->boundary_value + (overshoot_delta * overshoot_frac >> 10);
+    }
+}
+
 void lv_anim_set_var(lv_anim_t * a, void * var)
 {
     a->var = var;
@@ -569,6 +677,7 @@ uint32_t lv_anim_resolve_speed(uint32_t speed_or_time, int32_t start, int32_t en
 
     uint32_t d    = LV_ABS(start - end);
     uint32_t speed = speed_or_time & 0x3FF;
+    if(speed == 0) speed = 1;
     uint32_t time = (d * 100) / speed; /*Speed is in 10 units per sec*/
     uint32_t max_time = (speed_or_time >> 20) & 0x3FF;
     uint32_t min_time = (speed_or_time >> 10) & 0x3FF;

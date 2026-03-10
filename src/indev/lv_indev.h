@@ -17,6 +17,7 @@ extern "C" {
 #include "../misc/lv_area.h"
 #include "../misc/lv_timer.h"
 #include "../misc/lv_event.h"
+#include "../misc/lv_anim.h"
 
 /*********************
  *      DEFINES
@@ -192,6 +193,21 @@ void lv_indev_set_scroll_limit(lv_indev_t * indev, uint8_t scroll_limit);
  * @param scroll_throw the slow-down in [%]
  */
 void lv_indev_set_scroll_throw(lv_indev_t * indev, uint8_t scroll_throw);
+
+/**
+ * Set custom animation paths for scroll throw phases
+ * @param indev pointer to an input device
+ * @param throw_path path for throw/normal deceleration (NULL = keep current, default expo_decay)
+ * @param bounce_path path for elastic drag release bounce back (NULL = keep current, default ease_out)
+ * @param is_finished_cb optional convergence-based finish check for throw phase (NULL = use time-based termination).
+ *                       When provided, the throw animation ends when this callback returns true
+ *                       instead of after a fixed duration. Useful for custom curves like spring or
+ *                       exponential decay that converge asymptotically.
+ */
+void lv_indev_set_scroll_throw_path(lv_indev_t * indev,
+                                     lv_anim_path_cb_t throw_path,
+                                     lv_anim_path_cb_t bounce_path,
+                                     lv_anim_is_finished_cb_t is_finished_cb);
 
 /**
  * Get the type of an input device

@@ -127,109 +127,72 @@ void lv_indev_scroll_throw_handler(lv_indev_t * indev)
     if(scroll_obj == NULL) return;
     if(indev->pointer.scroll_dir == LV_DIR_NONE) return;
 
-    int32_t scroll_throw = indev->scroll_throw;
-
-    if(lv_obj_has_flag(scroll_obj, LV_OBJ_FLAG_SCROLL_MOMENTUM) == false) {
+    bool has_momentum = lv_obj_has_flag(scroll_obj, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    if(!has_momentum) {
         indev->pointer.scroll_throw_vect.y = 0;
         indev->pointer.scroll_throw_vect.x = 0;
     }
 
     lv_scroll_snap_t align_x = lv_obj_get_scroll_snap_x(scroll_obj);
     lv_scroll_snap_t align_y = lv_obj_get_scroll_snap_y(scroll_obj);
+    lv_dir_t dir = indev->pointer.scroll_dir;
+    bool anim_started = false;
 
-    if(indev->pointer.scroll_dir == LV_DIR_VER) {
-        indev->pointer.scroll_throw_vect.x = 0;
-        /*If no snapping "throw"*/
-        if(align_y == LV_SCROLL_SNAP_NONE) {
-            indev->pointer.scroll_throw_vect.y =
-                indev->pointer.scroll_throw_vect.y * (100 - scroll_throw) / 100;
+    /*Store back-pointer so throw completed_cb can clear scroll_obj*/
+    indev->scroll_throw_config.indev = indev;
 
-            int32_t sb = lv_obj_get_scroll_bottom(scroll_obj);
-            int32_t st = lv_obj_get_scroll_top(scroll_obj);
+    if(dir == LV_DIR_VER) {
+        int32_t predict_dy = lv_indev_scroll_throw_predict(indev, LV_DIR_VER);
+        scroll_limit_diff(indev, NULL, &predict_dy);
 
-            indev->pointer.scroll_throw_vect.y = elastic_diff(scroll_obj, indev->pointer.scroll_throw_vect.y, st, sb,
-                                                              LV_DIR_VER);
-
-            lv_obj_scroll_by_raw(scroll_obj, 0,  indev->pointer.scroll_throw_vect.y);
-            if(indev->reset_query) return;
+        if(align_y != LV_SCROLL_SNAP_NONE) {
+            predict_dy += find_snap_point_y(scroll_obj, LV_COORD_MIN, LV_COORD_MAX, predict_dy);
+            if(predict_dy != 0) {
+                lv_obj_scroll_anim_start(scroll_obj, 0, predict_dy);
+                anim_started = true;
+            }
         }
-        /*With snapping find the nearest snap point and scroll there*/
         else {
-            int32_t diff_y = lv_indev_scroll_throw_predict(indev, LV_DIR_VER);
-            indev->pointer.scroll_throw_vect.y = 0;
-            scroll_limit_diff(indev, NULL, &diff_y);
-            int32_t y = find_snap_point_y(scroll_obj, LV_COORD_MIN, LV_COORD_MAX, diff_y);
-            lv_obj_scroll_by(scroll_obj, 0, diff_y + y, LV_ANIM_ON);
-            if(indev->reset_query) return;
+            lv_obj_scroll_throw(scroll_obj, 0, predict_dy, &indev->scroll_throw_config);
+            anim_started = true;
         }
     }
-    else if(indev->pointer.scroll_dir == LV_DIR_HOR) {
-        indev->pointer.scroll_throw_vect.y = 0;
-        /*If no snapping "throw"*/
-        if(align_x == LV_SCROLL_SNAP_NONE) {
-            indev->pointer.scroll_throw_vect.x =
-                indev->pointer.scroll_throw_vect.x * (100 - scroll_throw) / 100;
+    else if(dir == LV_DIR_HOR) {
+        int32_t predict_dx = lv_indev_scroll_throw_predict(indev, LV_DIR_HOR);
+        scroll_limit_diff(indev, &predict_dx, NULL);
 
-            int32_t sl = lv_obj_get_scroll_left(scroll_obj);
-            int32_t sr = lv_obj_get_scroll_right(scroll_obj);
-
-            indev->pointer.scroll_throw_vect.x = elastic_diff(scroll_obj, indev->pointer.scroll_throw_vect.x, sl, sr,
-                                                              LV_DIR_HOR);
-
-            lv_obj_scroll_by_raw(scroll_obj, indev->pointer.scroll_throw_vect.x, 0);
-            if(indev->reset_query) return;
+        if(align_x != LV_SCROLL_SNAP_NONE) {
+            predict_dx += find_snap_point_x(scroll_obj, LV_COORD_MIN, LV_COORD_MAX, predict_dx);
+            if(predict_dx != 0) {
+                lv_obj_scroll_anim_start(scroll_obj, predict_dx, 0);
+                anim_started = true;
+            }
         }
-        /*With snapping find the nearest snap point and scroll there*/
         else {
-            int32_t diff_x = lv_indev_scroll_throw_predict(indev, LV_DIR_HOR);
-            indev->pointer.scroll_throw_vect.x = 0;
-            scroll_limit_diff(indev, &diff_x, NULL);
-            int32_t x = find_snap_point_x(scroll_obj, LV_COORD_MIN, LV_COORD_MAX, diff_x);
-            lv_obj_scroll_by(scroll_obj, x + diff_x, 0, LV_ANIM_ON);
-            if(indev->reset_query) return;
+            lv_obj_scroll_throw(scroll_obj, predict_dx, 0, &indev->scroll_throw_config);
+            anim_started = true;
         }
     }
 
-    /*Check if the scroll has finished*/
-    if(indev->pointer.scroll_throw_vect.x == 0 && indev->pointer.scroll_throw_vect.y == 0) {
-        /*Revert if scrolled in*/
-        /*If vertically scrollable and not controlled by snap*/
-        if(align_y == LV_SCROLL_SNAP_NONE) {
-            int32_t st = lv_obj_get_scroll_top(scroll_obj);
-            int32_t sb = lv_obj_get_scroll_bottom(scroll_obj);
-            if(st > 0 || sb > 0) {
-                if(st < 0) {
-                    lv_obj_scroll_by(scroll_obj, 0, st, LV_ANIM_ON);
-                    if(indev->reset_query) return;
-                }
-                else if(sb < 0) {
-                    lv_obj_scroll_by(scroll_obj, 0, -sb, LV_ANIM_ON);
-                    if(indev->reset_query) return;
-                }
-            }
-        }
-
-        /*If horizontally scrollable and not controlled by snap*/
-        if(align_x == LV_SCROLL_SNAP_NONE) {
-            int32_t sl = lv_obj_get_scroll_left(scroll_obj);
-            int32_t sr = lv_obj_get_scroll_right(scroll_obj);
-            if(sl > 0 || sr > 0) {
-                if(sl < 0) {
-                    lv_obj_scroll_by(scroll_obj, sl, 0, LV_ANIM_ON);
-                    if(indev->reset_query) return;
-                }
-                else if(sr < 0) {
-                    lv_obj_scroll_by(scroll_obj, -sr, 0, LV_ANIM_ON);
-                    if(indev->reset_query) return;
-                }
-            }
-        }
-
+    /*
+     * Event pairing with the SCROLL_BEGIN(NULL) from lv_indev_scroll_handler:
+     * All animation paths (snap / throw) use scroll_end_cb to send the matching
+     * SCROLL_END when the animation finishes. Only send END here if no animation
+     * was started (e.g. snap predict == 0).
+     */
+    if(!anim_started) {
         lv_obj_send_event(scroll_obj, LV_EVENT_SCROLL_END, indev);
         if(indev->reset_query) return;
-
         indev->pointer.scroll_dir = LV_DIR_NONE;
         indev->pointer.scroll_obj = NULL;
+    }
+    else {
+        /*Keep scroll_obj alive during the one-shot throw animation so that
+         *indev_proc_press can detect and stop it on the next press.
+         *scroll_dir is cleared since the throw direction is already baked
+         *into the animation; scroll_obj will be cleared when the animation
+         *ends (scroll_end_cb) or when the user presses again.*/
+        indev->pointer.scroll_dir = LV_DIR_NONE;
     }
 }
 

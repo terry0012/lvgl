@@ -169,6 +169,22 @@ typedef struct _lv_anim_ease_para_t {
     int32_t last_act_time; /**< last act_time used to derive dt for ease integration */
 } lv_anim_ease_para_t; /**< Parameter used when path is custom_ease*/
 
+/** Scroll throw animation context (2-phase: throw + overshoot/springback) */
+typedef struct {
+    uint32_t throw_end_time;      /**< End time of throw phase (ms) */
+    int32_t boundary_value;       /**< Boundary position in anim coordinate */
+    int32_t overshoot_peak;       /**< Peak overshoot position, equals boundary if no overshoot */
+
+    lv_anim_path_cb_t throw_path_cb;      /**< Path for throw/normal deceleration phase */
+    lv_anim_path_cb_t bounce_path_cb;     /**< Path for elastic drag release bounce back */
+    lv_anim_is_finished_cb_t is_finished_cb; /**< Optional convergence-based finish check for throw phase.
+                                              *   When set, the throw animation uses this instead of time-based
+                                              *   termination, enabling custom curves (e.g. spring, expo_decay)
+                                              *   to end when they converge rather than after a fixed duration. */
+    void * indev;                 /**< Back-pointer to owning indev, used by throw completed_cb
+                                  *   to clear scroll_obj. Set internally, not user-facing. */
+} lv_anim_scroll_throw_config_t;
+
 /** Describes an animation*/
 struct _lv_anim_t {
 #if LV_USE_EXT_DATA
@@ -640,11 +656,35 @@ lv_value_precise_t lv_anim_path_bounce(const lv_anim_t * a);
 lv_value_precise_t lv_anim_path_step(const lv_anim_t * a);
 
 /**
+ * Exponential decay path matching original LVGL scroll throw behavior (v *= 0.9 per frame).
+ * Uses is_finished_cb for convergence-based termination.
+ * @param a     pointer to an animation
+ * @return      the current value to set
+ */
+lv_value_precise_t lv_anim_path_expo_decay(const lv_anim_t * a);
+
+/**
+ * Convergence-based finish condition for exponential decay animation.
+ * Returns true when the animation value is close enough to end_value.
+ * @param a     pointer to an animation
+ * @return      true if the animation should be considered finished
+ */
+bool lv_anim_path_expo_decay_is_finished(const lv_anim_t * a);
+
+/**
  * A custom cubic bezier animation path, need to specify cubic-parameters in a->parameter.bezier3
  * @param a     pointer to an animation
  * @return      the current value to set
  */
 lv_value_precise_t lv_anim_path_custom_bezier3(const lv_anim_t * a);
+
+/**
+ * Scroll throw animation path with 2 phases: throw to boundary, then overshoot+springback.
+ * Requires lv_anim_scroll_throw_config_t in a->user_data
+ * @param a     pointer to an animation
+ * @return      the current value to set
+ */
+lv_value_precise_t lv_anim_path_scroll_throw(const lv_anim_t * a);
 
 #if LV_USE_EXT_DATA
 /**
