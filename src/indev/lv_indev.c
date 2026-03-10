@@ -142,6 +142,11 @@ lv_indev_t * lv_indev_create(void)
     indev->gesture_min_velocity = LV_INDEV_DEF_GESTURE_MIN_VELOCITY;
     indev->rotary_sensitivity  = LV_INDEV_DEF_ROTARY_SENSITIVITY;
     indev->key_remap_cb         = NULL;
+
+    /*Initialize scroll throw config with default unified path*/
+    indev->scroll_throw_config.path_cb = lv_anim_path_scroll_throw;
+    indev->scroll_throw_config.is_finished_cb = lv_anim_path_scroll_throw_is_finished;
+
 #if LV_USE_EXT_DATA
     indev->ext_data.free_cb = NULL;
     indev->ext_data.data = NULL;
@@ -412,6 +417,25 @@ void lv_indev_set_scroll_throw(lv_indev_t * indev, uint8_t scroll_throw)
     if(indev == NULL) return;
 
     indev->scroll_throw = scroll_throw;
+}
+
+void lv_indev_set_scroll_throw_path(lv_indev_t * indev,
+                                    lv_anim_path_cb_t path_cb,
+                                    lv_anim_is_finished_cb_t is_finished_cb)
+{
+    if(indev == NULL) return;
+
+    indev->scroll_throw_config.path_cb = path_cb ? path_cb : lv_anim_path_scroll_throw;
+    indev->scroll_throw_config.is_finished_cb = is_finished_cb;  /* NULL = time-based termination */
+}
+
+void lv_indev_set_scroll_throw_spring_params(lv_indev_t * indev,
+                                             lv_value_precise_t omega,
+                                             lv_value_precise_t zeta)
+{
+    if(indev == NULL) return;
+    indev->scroll_throw_config.omega = omega;
+    indev->scroll_throw_config.zeta  = zeta;
 }
 
 void * lv_indev_get_user_data(const lv_indev_t * indev)
@@ -1260,13 +1284,17 @@ static void indev_proc_press(lv_indev_t * indev)
 
     /*The scroll object might have scroll throw. Stop it manually*/
     if(new_obj_searched && indev->pointer.scroll_obj) {
-        /*Attempt to stop scroll throw animation firstly*/
+        /*Stop old per-frame throw timer if any*/
         if(indev->scroll_throw_anim) {
             lv_anim_delete(indev, indev_scroll_throw_anim_cb);
             indev->scroll_throw_anim = NULL;
         }
 
-        lv_indev_scroll_throw_handler(indev);
+        /*Stop new one-shot scroll throw animations.
+         *lv_anim_delete triggers scroll_end_cb (deleted_cb) which sends
+         *SCROLL_END and clears scroll_obj on the indev automatically.*/
+        lv_obj_scroll_anim_stop(indev->pointer.scroll_obj);
+        indev->pointer.scroll_obj = NULL;
         if(indev_reset_check(indev)) return;
     }
 
@@ -1559,10 +1587,7 @@ static void indev_proc_release(lv_indev_t * indev)
     }
 
     if(scroll_obj) {
-        if(!indev->scroll_throw_anim) {
-            indev_scroll_throw_anim_start(indev);
-        }
-
+        lv_indev_scroll_throw_handler(indev);
         if(indev_reset_check(indev)) return;
     }
 }

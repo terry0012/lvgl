@@ -10,6 +10,7 @@
 #include "../misc/lv_anim_private.h"
 #include "lv_obj_private.h"
 #include "../indev/lv_indev.h"
+#include "../indev/lv_indev_private.h"
 #include "../indev/lv_indev_scroll.h"
 #include "../display/lv_display.h"
 #include "../misc/lv_area.h"
@@ -40,6 +41,7 @@
 static void scroll_x_anim(void * obj, int32_t v);
 static void scroll_y_anim(void * obj, int32_t v);
 static void scroll_end_cb(lv_anim_t * a);
+static void scroll_throw_end_cb(lv_anim_t * a);
 static void scroll_area_into_view(const lv_area_t * area, lv_obj_t * child, lv_point_t * scroll_value,
                                   lv_anim_enable_t anim_en);
 static int32_t scroll_anim_end_value(lv_anim_t * a, int32_t v);
@@ -361,6 +363,138 @@ void lv_obj_scroll_by(lv_obj_t * obj, int32_t dx, int32_t dy, lv_anim_enable_t a
 
         res = lv_obj_send_event(obj, LV_EVENT_SCROLL_END, NULL);
         if(res != LV_RESULT_OK) return;
+    }
+}
+
+void lv_obj_scroll_anim_start(lv_obj_t * obj, int32_t dx, int32_t dy)
+{
+    if(dx == 0 && dy == 0) return;
+
+    lv_display_t * d = lv_obj_get_display(obj);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, obj);
+    lv_anim_set_deleted_cb(&a, scroll_end_cb);
+
+    if(dx) {
+        uint32_t t = lv_anim_speed_clamped((lv_display_get_horizontal_resolution(d)) >> 1,
+                                           SCROLL_ANIM_TIME_MIN, SCROLL_ANIM_TIME_MAX);
+        lv_anim_set_duration(&a, t);
+        int32_t sx = lv_obj_get_scroll_x(obj);
+        lv_anim_set_values(&a, -sx, -sx + dx);
+        lv_anim_set_exec_cb(&a, scroll_x_anim);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
+    }
+
+    if(dy) {
+        uint32_t t = lv_anim_speed_clamped((lv_display_get_vertical_resolution(d)) >> 1,
+                                           SCROLL_ANIM_TIME_MIN, SCROLL_ANIM_TIME_MAX);
+        lv_anim_set_duration(&a, t);
+        int32_t sy = lv_obj_get_scroll_y(obj);
+        lv_anim_set_values(&a, -sy, -sy + dy);
+        lv_anim_set_exec_cb(&a, scroll_y_anim);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
+    }
+}
+
+/**
+ * Internal helper: compute scroll throw for one axis and start animation.
+ *
+ * Unified model: computes A (start), B (target), C (boundary_near/far) and passes
+ * everything to a single path_cb via lv_anim_scroll_throw_config_t. The path_cb
+ * decides how to handle normal throw, overshoot, and bounce-back.
+ *
+ * @param s_cur     current scroll position (scroll_x or scroll_y)
+ * @param s_near    scroll margin in negative direction (scroll_top or scroll_left)
+ * @param s_far     scroll margin in positive direction (scroll_bottom or scroll_right)
+ * @param throw_dist predicted throw distance in scroll_by direction (positive = content moves down/right)
+ */
+static void scroll_throw_axis(lv_obj_t * obj, int32_t s_cur, int32_t s_near, int32_t s_far,
+                              int32_t throw_dist, bool has_elastic,
+                              lv_anim_scroll_throw_config_t * config, lv_anim_exec_xcb_t exec_cb)
+{
+    /* Convert throw_dist from scroll_by direction to scroll coordinate direction (negate) */
+    int32_t natural_d = -throw_dist;
+
+    /* A = current position, B = predicted target */
+    int32_t target = s_cur + natural_d;
+
+    /* Clamp policy:
+     * - No elastic: always clamp (content can't go past boundary)
+     * - Elastic + no is_finished_cb (time-based generic curve): clamp, because
+     *   the path_cb doesn't know about boundaries and would drive past them
+     * - Elastic + is_finished_cb (boundary-aware curve): don't clamp,
+     *   the path_cb receives unclamped B and handles overshoot/bounce itself */
+    bool clamp = !has_elastic ? true : (config->is_finished_cb == NULL);
+    if(clamp) {
+        if(natural_d > 0 && natural_d > s_far) target = s_cur + s_far;
+        else if(natural_d < 0 && (-natural_d) > s_near) target = s_cur - s_near;
+    }
+
+    /* C = boundaries in anim coordinates (negated scroll coords)
+     * boundary_near = -(s_cur - s_near): top/left edge (larger value in anim coords)
+     * boundary_far  = -(s_cur + s_far):  bottom/right edge (smaller value in anim coords)
+     * Invariant: boundary_near >= boundary_far when within bounds */
+    config->boundary_near = -(s_cur - s_near);
+    config->boundary_far  = -(s_cur + s_far);
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, obj);
+    lv_anim_set_exec_cb(&a, exec_cb);
+    lv_anim_set_deleted_cb(&a, scroll_throw_end_cb);
+    lv_anim_set_user_data(&a, config);
+
+    lv_anim_set_values(&a, -s_cur, -target);
+    lv_anim_set_path_cb(&a, config->path_cb);
+
+    /* Copy spring parameters to anim's ease para for parameterized curves */
+    a.parameter.ease.p1 = config->omega;
+    a.parameter.ease.p2 = config->zeta;
+
+    if(config->is_finished_cb) {
+        /* Convergence-based: path_cb decides when to stop.
+         * Duration is just a safety net to prevent infinite animation. */
+        lv_anim_set_duration(&a, 3000);
+        lv_anim_set_is_finished_cb(&a, config->is_finished_cb);
+    }
+    else {
+        /* Time-based: use speed-derived duration (same as original LVGL) */
+        lv_display_t * d = lv_obj_get_display(obj);
+        uint32_t speed = lv_display_get_horizontal_resolution(d) >> 1;
+        if(speed < 10) speed = 10;
+        lv_anim_set_duration(&a, lv_anim_speed_clamped(speed, 200, 1000));
+    }
+
+    lv_anim_start(&a);
+}
+
+void lv_obj_scroll_anim_stop(lv_obj_t * obj)
+{
+    lv_anim_delete(obj, scroll_x_anim);
+    lv_anim_delete(obj, scroll_y_anim);
+}
+
+void lv_obj_scroll_throw(lv_obj_t * obj, int32_t throw_dist_x, int32_t throw_dist_y,
+                         lv_anim_scroll_throw_config_t * config)
+{
+    if(config == NULL) return;
+
+    int32_t sx = lv_obj_get_scroll_x(obj);
+    int32_t sy = lv_obj_get_scroll_y(obj);
+    int32_t st = lv_obj_get_scroll_top(obj);
+    int32_t sb = lv_obj_get_scroll_bottom(obj);
+    int32_t sl = lv_obj_get_scroll_left(obj);
+    int32_t sr = lv_obj_get_scroll_right(obj);
+    bool has_elastic = lv_obj_has_flag(obj, LV_OBJ_FLAG_SCROLL_ELASTIC);
+
+    if(throw_dist_y != 0 || st < 0 || sb < 0) {
+        scroll_throw_axis(obj, sy, st, sb, throw_dist_y, has_elastic, config, scroll_y_anim);
+    }
+    if(throw_dist_x != 0 || sl < 0 || sr < 0) {
+        scroll_throw_axis(obj, sx, sl, sr, throw_dist_x, has_elastic, config, scroll_x_anim);
     }
 }
 
@@ -701,6 +835,24 @@ static void scroll_end_cb(lv_anim_t * a)
 {
     /*Do not sent END event if there wasn't a BEGIN*/
     if(a->start_cb_called) lv_obj_send_event(a->var, LV_EVENT_SCROLL_END, NULL);
+}
+
+/**
+ * Completed/deleted callback for throw animations.
+ * Sends SCROLL_END and clears scroll_obj on the owning indev
+ * via the back-pointer stored in lv_anim_scroll_throw_config_t.
+ */
+static void scroll_throw_end_cb(lv_anim_t * a)
+{
+    if(a->start_cb_called) lv_obj_send_event(a->var, LV_EVENT_SCROLL_END, NULL);
+
+    lv_anim_scroll_throw_config_t * config = a->user_data;
+    if(config && config->indev) {
+        lv_indev_t * indev = config->indev;
+        if(indev->pointer.scroll_obj == a->var) {
+            indev->pointer.scroll_obj = NULL;
+        }
+    }
 }
 
 static void scroll_area_into_view(const lv_area_t * area, lv_obj_t * child, lv_point_t * scroll_value,

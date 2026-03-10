@@ -17,6 +17,7 @@ extern "C" {
 #include "../misc/lv_area.h"
 #include "../misc/lv_timer.h"
 #include "../misc/lv_event.h"
+#include "../misc/lv_anim.h"
 
 /*********************
  *      DEFINES
@@ -192,6 +193,34 @@ void lv_indev_set_scroll_limit(lv_indev_t * indev, uint8_t scroll_limit);
  * @param scroll_throw the slow-down in [%]
  */
 void lv_indev_set_scroll_throw(lv_indev_t * indev, uint8_t scroll_throw);
+
+/**
+ * Set custom scroll throw curve.
+ * The path_cb receives A (start), B (target), C (boundary) via config in user_data,
+ * and handles all scenarios (normal / overshoot / bounce-back) in a single function.
+ *
+ * Each curve scheme is a (path_cb + is_finished_cb) pair. The is_finished_cb is set
+ * together with path_cb as part of the scheme — the curve decides its own termination
+ * logic (time-based, position convergence, velocity threshold, etc.).
+ *
+ * @param indev pointer to an input device
+ * @param path_cb unified path function (NULL = restore default lv_anim_path_scroll_throw)
+ * @param is_finished_cb paired convergence check (NULL = restore default lv_anim_path_scroll_throw_is_finished)
+ */
+void lv_indev_set_scroll_throw_path(lv_indev_t * indev,
+                                    lv_anim_path_cb_t path_cb,
+                                    lv_anim_is_finished_cb_t is_finished_cb);
+
+/**
+ * Set spring parameters for parameterized spring scroll throw curves.
+ * Only used when path_cb is lv_anim_path_scroll_throw_spring_param.
+ * @param indev pointer to an input device
+ * @param omega spring natural frequency (higher = faster oscillation, e.g. 6~15)
+ * @param zeta  damping ratio (<1 underdamped/oscillation, =1 critical, >1 overdamped/no oscillation)
+ */
+void lv_indev_set_scroll_throw_spring_params(lv_indev_t * indev,
+                                             lv_value_precise_t omega,
+                                             lv_value_precise_t zeta);
 
 /**
  * Get the type of an input device

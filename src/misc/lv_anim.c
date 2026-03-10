@@ -15,6 +15,7 @@
 #include "lv_math.h"
 #include "../stdlib/lv_mem.h"
 #include "../stdlib/lv_string.h"
+#include <math.h>
 
 /*********************
  *      DEFINES
@@ -430,6 +431,485 @@ lv_value_precise_t lv_anim_path_custom_bezier3(const lv_anim_t * a)
     return lv_anim_path_cubic_bezier(a, para->x1, para->y1, para->x2, para->y2);
 }
 
+lv_value_precise_t lv_anim_path_expo_decay(const lv_anim_t * a)
+{
+    /*
+     * True exponential decay matching original LVGL scroll throw: v *= 0.9 per frame.
+     *
+     * Original LVGL applies v *= scroll_throw/256 each timer tick (default scroll_throw=10%,
+     * so decay_factor = (256-10)/256 ≈ 0.961 per tick at ~30fps).
+     * The position integral: s(t) = S_total * (1 - decay^(t/dt))
+     * where S_total = v0 * dt / (1 - decay).
+     *
+     * We use act_time (ms) directly. With frame_period = 33ms (30fps) and
+     * decay_per_frame = 0.9:
+     *   decay(t) = 0.9^(t / 33)
+     *   position(t) = S * (1 - 0.9^(t/33))
+     *
+     * Since start_value and end_value encode the full range (end_value = start + S_total),
+     * we compute: result = start + (end - start) * (1 - 0.9^(t/33))
+     *
+     * For is_finished_cb termination: animation ends when remaining < 1 pixel.
+     */
+    if(a->act_time <= 0) return a->start_value;
+
+    lv_value_precise_t t = (lv_value_precise_t)a->act_time;
+    lv_value_precise_t frame_period = 33.0f;  /* ~30fps, matching LV_DEF_REFR_PERIOD */
+    lv_value_precise_t decay_per_frame = 0.9f;
+
+    /* Number of frames elapsed (fractional) */
+    lv_value_precise_t n_frames = t / frame_period;
+
+    /* remaining_frac = 0.9^n_frames using expf for smooth interpolation */
+    lv_value_precise_t remaining_frac;
+    /* ln(0.9) ≈ -0.10536 */
+    remaining_frac = expf(-0.10536f * n_frames);
+
+    LV_UNUSED(decay_per_frame);
+
+    /* progress = 1 - remaining */
+    lv_value_precise_t progress = 1.0f - remaining_frac;
+    if(progress > 1.0f) progress = 1.0f;
+
+    return a->start_value + (a->end_value - a->start_value) * progress;
+}
+
+bool lv_anim_path_expo_decay_is_finished(const lv_anim_t * a)
+{
+    /* Convergence check: finished when remaining distance < 1 pixel */
+    lv_value_precise_t range = a->end_value - a->start_value;
+    if(range < 0) range = -range;
+    if(range < 1.0f) return true;
+
+    lv_value_precise_t t = (lv_value_precise_t)a->act_time;
+    lv_value_precise_t n_frames = t / 33.0f;
+    lv_value_precise_t remaining_frac = expf(-0.10536f * n_frames);
+    lv_value_precise_t remaining_dist = range * remaining_frac;
+
+    return remaining_dist < 1.0f;
+}
+
+lv_value_precise_t lv_anim_path_scroll_throw(const lv_anim_t * a)
+{
+    /*
+     * Unified scroll throw path: handles normal / overshoot / bounce-back in one function.
+     *
+     * Framework provides A, B, C via anim + config:
+     *   A = a->start_value       (current position in anim coords)
+     *   B = a->end_value         (predicted target, unclamped — may be beyond boundary)
+     *   C = boundary_near / boundary_far  (content edges in anim coords)
+     *
+     * Behavior:
+     *   - A past C: bounce-back to C (elastic drag release)
+     *   - B past C: expo_decay A→C, then elastic overshoot + decay back to C
+     *   - Normal:   expo_decay A→B
+     *
+     * The expo_decay formula matches original LVGL: v *= 0.9 per frame (33ms).
+     */
+    lv_anim_scroll_throw_config_t * cfg = (lv_anim_scroll_throw_config_t *)a->user_data;
+    if(a->act_time <= 0) return a->start_value;
+
+    lv_value_precise_t A = a->start_value;
+    lv_value_precise_t B = a->end_value;
+
+    lv_value_precise_t boundary = B;
+    bool overshoot = false;
+    bool a_past_boundary = false;
+
+    if(cfg) {
+        lv_value_precise_t near = (lv_value_precise_t)cfg->boundary_near;
+        lv_value_precise_t far = (lv_value_precise_t)cfg->boundary_far;
+
+        if(A > near) {
+            a_past_boundary = true;
+            boundary = near;
+        }
+        else if(A < far) {
+            a_past_boundary = true;
+            boundary = far;
+        }
+        else if(B > near) {
+            overshoot = true;
+            boundary = near;
+        }
+        else if(B < far) {
+            overshoot = true;
+            boundary = far;
+        }
+    }
+
+    lv_value_precise_t t = (lv_value_precise_t)a->act_time;
+    lv_value_precise_t n_frames = t / 33.0f;
+    lv_value_precise_t remaining_frac = expf(-0.10536f * n_frames);
+    lv_value_precise_t progress = 1.0f - remaining_frac;
+    if(progress > 1.0f) progress = 1.0f;
+
+    if(a_past_boundary) {
+        /* A already past boundary (elastic drag release): bounce back to C */
+        return A + (boundary - A) * progress;
+    }
+    else if(overshoot) {
+        /* B past boundary: two-phase animation
+         * Phase 1: expo_decay A → C (free travel)
+         * Phase 2: elastic overshoot past C, decaying back to C */
+        lv_value_precise_t free_dist = boundary - A;
+        lv_value_precise_t total_dist = B - A;
+        if(total_dist == 0) return boundary;
+
+        lv_value_precise_t overshoot_amp = (B - boundary) / 3.0f;
+
+        lv_value_precise_t progress_at_boundary = free_dist / total_dist;
+        if(progress_at_boundary < 0) progress_at_boundary = -progress_at_boundary;
+        if(progress_at_boundary > 1.0f) progress_at_boundary = 1.0f;
+
+        if(progress < progress_at_boundary) {
+            /* Phase 1: free travel */
+            return A + total_dist * progress;
+        }
+        else {
+            /* Phase 2: elastic overshoot.
+             * sin(π*t)*exp(-2t): exactly 0 at t=0 and t=1, guarantees return to C */
+            lv_value_precise_t denom = 1.0f - progress_at_boundary;
+            if(denom < 0.001f) return boundary;
+            lv_value_precise_t ep = (progress - progress_at_boundary) / denom;
+            if(ep < 0) ep = 0;
+            if(ep > 1.0f) ep = 1.0f;
+
+            lv_value_precise_t elastic_frac = sinf(3.14159f * ep) * expf(-2.0f * ep);
+            if(elastic_frac < 0) elastic_frac = 0;
+            if(elastic_frac > 1.0f) elastic_frac = 1.0f;
+
+            return boundary + overshoot_amp * elastic_frac;
+        }
+    }
+    else {
+        /* Normal: A and B both within bounds */
+        return A + (B - A) * progress;
+    }
+}
+
+bool lv_anim_path_scroll_throw_is_finished(const lv_anim_t * a)
+{
+    lv_anim_scroll_throw_config_t * cfg = (lv_anim_scroll_throw_config_t *)a->user_data;
+
+    /* Check convergence: current value close to final resting position */
+    lv_value_precise_t current = a->current_value;
+    lv_value_precise_t target;
+
+    if(cfg) {
+        lv_value_precise_t near = (lv_value_precise_t)cfg->boundary_near;
+        lv_value_precise_t far = (lv_value_precise_t)cfg->boundary_far;
+        lv_value_precise_t B = a->end_value;
+
+        /* Final resting position: B clamped to boundaries */
+        if(B > near) target = near;
+        else if(B < far) target = far;
+        else target = B;
+    }
+    else {
+        target = a->end_value;
+    }
+
+    lv_value_precise_t remaining = current - target;
+    if(remaining < 0) remaining = -remaining;
+
+    return remaining < 1.0f;
+}
+
+lv_value_precise_t lv_anim_path_scroll_throw_spring(const lv_anim_t * a)
+{
+    /*
+     * Apple-style friction→spring scroll throw path.
+     *
+     * Same A/B/C contract:
+     *   A = a->start_value, B = a->end_value (unclamped), C = boundary from config.
+     *
+     * Modeled after iOS UIScrollView / Flutter BouncingScrollSimulation:
+     *   - Normal (B within bounds): expo_decay A→B (friction phase only)
+     *   - B past boundary: expo_decay A→C, then seamlessly hand off remaining
+     *     velocity to an underdamped spring that bounces around C
+     *   - A already past boundary: spring directly back to C
+     *
+     * The key insight from Apple's implementation: the spring phase starts at
+     * the boundary with the velocity the friction phase had at that moment,
+     * creating a physically continuous transition.
+     */
+    lv_anim_scroll_throw_config_t * cfg = (lv_anim_scroll_throw_config_t *)a->user_data;
+    if(a->act_time <= 0) return a->start_value;
+
+    lv_value_precise_t A = a->start_value;
+    lv_value_precise_t B = a->end_value;
+
+    /* expo_decay constants: v *= 0.9 per 33ms frame → decay_rate = ln(0.9)/33 ≈ -0.003193 per ms */
+    const lv_value_precise_t decay_rate = -0.10536f / 33.0f;  /* per ms */
+
+    /* Spring parameters (underdamped) */
+    const lv_value_precise_t omega = 10.0f;   /* natural frequency */
+    const lv_value_precise_t zeta  = 0.65f;   /* damping ratio (<1 = underdamped) */
+    const lv_value_precise_t omega_d = omega * sqrtf(1.0f - zeta * zeta);
+
+    /* Classify scenario */
+    enum { CASE_NORMAL, CASE_OVERSHOOT, CASE_A_PAST } scenario = CASE_NORMAL;
+    lv_value_precise_t boundary = B;
+
+    if(cfg) {
+        lv_value_precise_t near = (lv_value_precise_t)cfg->boundary_near;
+        lv_value_precise_t far  = (lv_value_precise_t)cfg->boundary_far;
+
+        if(A > near) {
+            scenario = CASE_A_PAST;
+            boundary = near;
+        }
+        else if(A < far) {
+            scenario = CASE_A_PAST;
+            boundary = far;
+        }
+        else if(B > near) {
+            scenario = CASE_OVERSHOOT;
+            boundary = near;
+        }
+        else if(B < far) {
+            scenario = CASE_OVERSHOOT;
+            boundary = far;
+        }
+    }
+
+    lv_value_precise_t t_ms = (lv_value_precise_t)a->act_time;
+
+    if(scenario == CASE_NORMAL) {
+        /* Pure friction: expo_decay A→B */
+        lv_value_precise_t progress = 1.0f - expf(decay_rate * t_ms);
+        if(progress > 1.0f) progress = 1.0f;
+        return A + (B - A) * progress;
+    }
+
+    if(scenario == CASE_A_PAST) {
+        /* A already past boundary: spring directly back to C.
+         * Initial velocity = 0 (drag release, finger just lifted). */
+        lv_value_precise_t t_sec = t_ms / 1000.0f;
+        lv_value_precise_t d0 = A - boundary;
+        lv_value_precise_t decay = expf(-zeta * omega * t_sec);
+        lv_value_precise_t osc = cosf(omega_d * t_sec)
+                                 + (zeta * omega / omega_d) * sinf(omega_d * t_sec);
+        return boundary + d0 * decay * osc;
+    }
+
+    /* CASE_OVERSHOOT: two-phase — friction A→C, then spring at C.
+     *
+     * Phase 1 (friction): position(t) = A + (B-A) * (1 - exp(decay_rate * t))
+     *   reaches boundary C when: A + (B-A)*(1-exp(decay_rate*t)) = C
+     *   → t_boundary = ln(1 - (C-A)/(B-A)) / decay_rate
+     *
+     * Phase 2 (spring): starts at C with the velocity friction had at t_boundary.
+     *   Friction velocity = (B-A) * (-decay_rate) * exp(decay_rate * t_boundary)
+     *   Spring: x(t) = C + exp(-ζωt) * [d0*cos(ωd*t) + ((ζω*d0+v0)/ωd)*sin(ωd*t)]
+     *   where d0 = 0 (starts exactly at boundary), v0 = handoff velocity.
+     */
+    lv_value_precise_t total_dist = B - A;
+    if(total_dist == 0) return boundary;
+
+    lv_value_precise_t frac_to_boundary = (boundary - A) / total_dist;
+    if(frac_to_boundary < 0) frac_to_boundary = -frac_to_boundary;
+    if(frac_to_boundary > 1.0f) frac_to_boundary = 1.0f;
+
+    /* Time (ms) when friction reaches boundary */
+    lv_value_precise_t one_minus_frac = 1.0f - frac_to_boundary;
+    if(one_minus_frac < 0.001f) one_minus_frac = 0.001f;
+    lv_value_precise_t t_boundary_ms = logf(one_minus_frac) / decay_rate;
+    if(t_boundary_ms < 0) t_boundary_ms = 0;
+
+    if(t_ms <= t_boundary_ms) {
+        /* Still in friction phase */
+        lv_value_precise_t progress = 1.0f - expf(decay_rate * t_ms);
+        if(progress > 1.0f) progress = 1.0f;
+        return A + total_dist * progress;
+    }
+
+    /* Spring phase: time since reaching boundary */
+    lv_value_precise_t t_spring_sec = (t_ms - t_boundary_ms) / 1000.0f;
+
+    /* Handoff velocity from friction (in position units per second) */
+    lv_value_precise_t v_at_boundary = total_dist * (-decay_rate) * expf(decay_rate * t_boundary_ms);
+    /* Convert from per-ms to per-sec */
+    v_at_boundary *= 1000.0f;
+
+    /* Cap handoff velocity (like Flutter's maxSpringTransferVelocity) */
+    const lv_value_precise_t max_transfer_v = 5000.0f;
+    if(v_at_boundary > max_transfer_v) v_at_boundary = max_transfer_v;
+    else if(v_at_boundary < -max_transfer_v) v_at_boundary = -max_transfer_v;
+
+    /* Spring from boundary: d0=0, v0=v_at_boundary
+     * x(t) = C + exp(-ζωt) * (v0/ωd) * sin(ωd*t) */
+    lv_value_precise_t spring_decay = expf(-zeta * omega * t_spring_sec);
+    lv_value_precise_t spring_pos = boundary
+                                    + spring_decay * (v_at_boundary / omega_d) * sinf(omega_d * t_spring_sec);
+
+    return spring_pos;
+}
+
+bool lv_anim_path_scroll_throw_spring_is_finished(const lv_anim_t * a)
+{
+    lv_anim_scroll_throw_config_t * cfg = (lv_anim_scroll_throw_config_t *)a->user_data;
+
+    /* Final resting position is always the boundary (clamped B) */
+    lv_value_precise_t B = a->end_value;
+    lv_value_precise_t target = B;
+    if(cfg) {
+        lv_value_precise_t near = (lv_value_precise_t)cfg->boundary_near;
+        lv_value_precise_t far  = (lv_value_precise_t)cfg->boundary_far;
+
+        if(B > near) target = near;
+        else if(B < far) target = far;
+
+        /* A past boundary: target is the boundary A was past */
+        lv_value_precise_t A = a->start_value;
+        if(A > near) target = near;
+        else if(A < far) target = far;
+    }
+
+    lv_value_precise_t err = a->current_value - target;
+    if(err < 0) err = -err;
+    return err < 1.0f;
+}
+
+/**
+ * Parameterized friction→spring scroll throw path.
+ * Same as lv_anim_path_scroll_throw_spring but reads spring parameters from
+ * a->parameter.ease: p1 = omega (natural frequency), p2 = zeta (damping ratio).
+ * This allows creating multiple spring variants (stiff, overdamped, bouncy, etc.)
+ * without writing separate path functions.
+ */
+lv_value_precise_t lv_anim_path_scroll_throw_spring_param(const lv_anim_t * a)
+{
+    lv_anim_scroll_throw_config_t * cfg = (lv_anim_scroll_throw_config_t *)a->user_data;
+    if(a->act_time <= 0) return a->start_value;
+
+    lv_value_precise_t A = a->start_value;
+    lv_value_precise_t B = a->end_value;
+
+    /* Read spring parameters from ease para */
+    lv_value_precise_t omega = a->parameter.ease.p1;  /* natural frequency */
+    lv_value_precise_t zeta  = a->parameter.ease.p2;  /* damping ratio */
+    if(omega <= 0) omega = 10.0f;
+    if(zeta <= 0) zeta = 0.65f;
+
+    const lv_value_precise_t decay_rate = -0.10536f / 33.0f;
+
+    /* Classify scenario */
+    enum { CASE_NORMAL, CASE_OVERSHOOT, CASE_A_PAST } scenario = CASE_NORMAL;
+    lv_value_precise_t boundary = B;
+
+    if(cfg) {
+        lv_value_precise_t near = (lv_value_precise_t)cfg->boundary_near;
+        lv_value_precise_t far  = (lv_value_precise_t)cfg->boundary_far;
+
+        if(A > near) {
+            scenario = CASE_A_PAST;
+            boundary = near;
+        }
+        else if(A < far) {
+            scenario = CASE_A_PAST;
+            boundary = far;
+        }
+        else if(B > near) {
+            scenario = CASE_OVERSHOOT;
+            boundary = near;
+        }
+        else if(B < far) {
+            scenario = CASE_OVERSHOOT;
+            boundary = far;
+        }
+    }
+
+    lv_value_precise_t t_ms = (lv_value_precise_t)a->act_time;
+
+    if(scenario == CASE_NORMAL) {
+        lv_value_precise_t progress = 1.0f - expf(decay_rate * t_ms);
+        if(progress > 1.0f) progress = 1.0f;
+        return A + (B - A) * progress;
+    }
+
+    /* Spring helper: handles both underdamped (zeta<1) and overdamped (zeta>=1) */
+#define SPRING_POS(target, d0, v0, t_sec) do { \
+        if(zeta < 1.0f) { \
+            lv_value_precise_t omega_d = omega * sqrtf(1.0f - zeta * zeta); \
+            lv_value_precise_t _decay = expf(-zeta * omega * (t_sec)); \
+            if(d0 == 0) \
+                result = (target) + _decay * ((v0) / omega_d) * sinf(omega_d * (t_sec)); \
+            else \
+                result = (target) + _decay * ((d0) * cosf(omega_d * (t_sec)) \
+                                              + ((zeta * omega * (d0) + (v0)) / omega_d) * sinf(omega_d * (t_sec))); \
+        } else { \
+            /* Overdamped or critically damped */ \
+            lv_value_precise_t s = omega * sqrtf(zeta * zeta - 1.0f + 0.0001f); \
+            lv_value_precise_t r1 = -zeta * omega + s; \
+            lv_value_precise_t r2 = -zeta * omega - s; \
+            lv_value_precise_t c2 = ((v0) - r1 * (d0)) / (r2 - r1 + 0.0001f); \
+            lv_value_precise_t c1 = (d0) - c2; \
+            result = (target) + c1 * expf(r1 * (t_sec)) + c2 * expf(r2 * (t_sec)); \
+        } \
+    } while(0)
+
+    lv_value_precise_t result;
+
+    if(scenario == CASE_A_PAST) {
+        lv_value_precise_t t_sec = t_ms / 1000.0f;
+        SPRING_POS(boundary, A - boundary, 0, t_sec);
+        return result;
+    }
+
+    /* CASE_OVERSHOOT: friction → spring handoff */
+    lv_value_precise_t total_dist = B - A;
+    if(total_dist == 0) return boundary;
+
+    lv_value_precise_t frac = (boundary - A) / total_dist;
+    if(frac < 0) frac = -frac;
+    if(frac > 1.0f) frac = 1.0f;
+
+    lv_value_precise_t one_minus_frac = 1.0f - frac;
+    if(one_minus_frac < 0.001f) one_minus_frac = 0.001f;
+    lv_value_precise_t t_boundary_ms = logf(one_minus_frac) / decay_rate;
+    if(t_boundary_ms < 0) t_boundary_ms = 0;
+
+    if(t_ms <= t_boundary_ms) {
+        lv_value_precise_t progress = 1.0f - expf(decay_rate * t_ms);
+        if(progress > 1.0f) progress = 1.0f;
+        return A + total_dist * progress;
+    }
+
+    lv_value_precise_t t_spring_sec = (t_ms - t_boundary_ms) / 1000.0f;
+    lv_value_precise_t v_at_boundary = total_dist * (-decay_rate) * expf(decay_rate * t_boundary_ms) * 1000.0f;
+    const lv_value_precise_t max_v = 5000.0f;
+    if(v_at_boundary > max_v) v_at_boundary = max_v;
+    else if(v_at_boundary < -max_v) v_at_boundary = -max_v;
+
+    SPRING_POS(boundary, 0, v_at_boundary, t_spring_sec);
+    return result;
+
+#undef SPRING_POS
+}
+
+bool lv_anim_path_scroll_throw_spring_param_is_finished(const lv_anim_t * a)
+{
+    lv_anim_scroll_throw_config_t * cfg = (lv_anim_scroll_throw_config_t *)a->user_data;
+
+    lv_value_precise_t B = a->end_value;
+    lv_value_precise_t target = B;
+    if(cfg) {
+        lv_value_precise_t near = (lv_value_precise_t)cfg->boundary_near;
+        lv_value_precise_t far  = (lv_value_precise_t)cfg->boundary_far;
+        if(B > near) target = near;
+        else if(B < far) target = far;
+        lv_value_precise_t A = a->start_value;
+        if(A > near) target = near;
+        else if(A < far) target = far;
+    }
+
+    lv_value_precise_t err = a->current_value - target;
+    if(err < 0) err = -err;
+    return err < 1.0f;
+}
+
 void lv_anim_set_var(lv_anim_t * a, void * var)
 {
     a->var = var;
@@ -569,6 +1049,7 @@ uint32_t lv_anim_resolve_speed(uint32_t speed_or_time, int32_t start, int32_t en
 
     uint32_t d    = LV_ABS(start - end);
     uint32_t speed = speed_or_time & 0x3FF;
+    if(speed == 0) speed = 1;
     uint32_t time = (d * 100) / speed; /*Speed is in 10 units per sec*/
     uint32_t max_time = (speed_or_time >> 20) & 0x3FF;
     uint32_t min_time = (speed_or_time >> 10) & 0x3FF;

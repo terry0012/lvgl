@@ -39,6 +39,16 @@ extern "C" {
  */
 lv_result_t lv_obj_scroll_by_raw(lv_obj_t * obj, int32_t x, int32_t y);
 
+/**
+ * Start a scroll animation without sending SCROLL_BEGIN/SCROLL_END events.
+ * Used internally by snap scroll path where the indev layer manages event pairing.
+ * Sends SCROLL_END via scroll_end_cb when the animation finishes.
+ * @param obj       pointer to an object to scroll
+ * @param dx        pixels to scroll horizontally
+ * @param dy        pixels to scroll vertically
+ */
+void lv_obj_scroll_anim_start(lv_obj_t * obj, int32_t dx, int32_t dy);
+
 /**********************
  *      MACROS
  **********************/

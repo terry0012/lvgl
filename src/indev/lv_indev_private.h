@@ -128,6 +128,8 @@ struct _lv_indev_t {
                                       here by the buttons*/
     lv_event_list_t event_list;
     lv_anim_t * scroll_throw_anim;
+    
+    lv_anim_scroll_throw_config_t scroll_throw_config; /**< Scroll throw animation configuration */
 
     /**< Key remapping callback */
     lv_indev_key_remap_cb_t key_remap_cb;

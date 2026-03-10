@@ -169,6 +169,43 @@ typedef struct _lv_anim_ease_para_t {
     int32_t last_act_time; /**< last act_time used to derive dt for ease integration */
 } lv_anim_ease_para_t; /**< Parameter used when path is custom_ease*/
 
+/** Scroll throw animation configuration.
+ *
+ * Unified curve model: the path_cb receives A (start), B (target), C (boundary)
+ * via this config in user_data, and handles all scenarios (normal / overshoot / bounce-back)
+ * in a single function. This enables physics-based curves (e.g. spring) to naturally
+ * produce overshoot and bounce without framework-level branching.
+ *
+ * Coordinate convention: all positions use negative scroll coordinates (same as lv_anim values).
+ */
+typedef struct {
+    int32_t boundary_near;        /**< Near boundary (C_near) in anim coords (negative scroll coord).
+                                   *   For vertical: -(scroll_y - scroll_top), i.e. top edge.
+                                   *   Invariant: boundary_near >= boundary_far when within bounds. */
+    int32_t boundary_far;         /**< Far boundary (C_far) in anim coords (negative scroll coord).
+                                   *   For vertical: -(scroll_y + scroll_bottom), i.e. bottom edge. */
+
+    lv_anim_path_cb_t path_cb;    /**< Unified path function for all throw scenarios.
+                                   *   Framework provides: A=start_value, B=end_value (unclamped),
+                                   *   C=boundary_near/boundary_far via this config in user_data.
+                                   *   The path_cb is responsible for handling all boundary scenarios
+                                   *   (normal / overshoot / bounce-back) internally.
+                                   *   Default: lv_anim_path_scroll_throw (expo_decay + elastic bounce). */
+    lv_anim_is_finished_cb_t is_finished_cb; /**< Convergence-based finish check.
+                                              *   When set, the animation ends when this returns true
+                                              *   instead of after a fixed duration. Enables asymptotic
+                                              *   curves (expo_decay, spring) to terminate naturally.
+                                              *   Default: lv_anim_path_scroll_throw_is_finished. */
+    lv_value_precise_t omega;     /**< Spring natural frequency for parameterized spring curves.
+                                   *   Copied to a->parameter.ease.p1 when animation starts.
+                                   *   0 = use curve's built-in default. */
+    lv_value_precise_t zeta;      /**< Spring damping ratio for parameterized spring curves.
+                                   *   Copied to a->parameter.ease.p2 when animation starts.
+                                   *   0 = use curve's built-in default. */
+    void * indev;                 /**< Back-pointer to owning indev, used by throw completed_cb
+                                  *   to clear scroll_obj. Set internally, not user-facing. */
+} lv_anim_scroll_throw_config_t;
+
 /** Describes an animation*/
 struct _lv_anim_t {
 #if LV_USE_EXT_DATA
@@ -640,11 +677,77 @@ lv_value_precise_t lv_anim_path_bounce(const lv_anim_t * a);
 lv_value_precise_t lv_anim_path_step(const lv_anim_t * a);
 
 /**
+ * Exponential decay path matching original LVGL scroll throw behavior (v *= 0.9 per frame).
+ * Uses is_finished_cb for convergence-based termination.
+ * @param a     pointer to an animation
+ * @return      the current value to set
+ */
+lv_value_precise_t lv_anim_path_expo_decay(const lv_anim_t * a);
+
+/**
+ * Convergence-based finish condition for exponential decay animation.
+ * Returns true when the animation value is close enough to end_value.
+ * @param a     pointer to an animation
+ * @return      true if the animation should be considered finished
+ */
+bool lv_anim_path_expo_decay_is_finished(const lv_anim_t * a);
+
+/**
  * A custom cubic bezier animation path, need to specify cubic-parameters in a->parameter.bezier3
  * @param a     pointer to an animation
  * @return      the current value to set
  */
 lv_value_precise_t lv_anim_path_custom_bezier3(const lv_anim_t * a);
+
+/**
+ * Default scroll throw path: expo_decay within bounds, elastic overshoot + bounce-back at boundaries.
+ * Reads lv_anim_scroll_throw_config_t from a->user_data for boundary info.
+ * A = start_value, B = end_value (predict target), C = boundary_near/boundary_far.
+ * @param a     pointer to an animation
+ * @return      the current value to set
+ */
+lv_value_precise_t lv_anim_path_scroll_throw(const lv_anim_t * a);
+
+/**
+ * Default convergence check for scroll throw: finished when position is within boundary
+ * and remaining movement < 1px.
+ * @param a     pointer to an animation
+ * @return      true if the animation should be considered finished
+ */
+bool lv_anim_path_scroll_throw_is_finished(const lv_anim_t * a);
+
+/**
+ * Spring (damped harmonic oscillator) scroll throw path.
+ * Same A/B/C contract: A=start, B=end (unclamped target), C=boundary from config.
+ * Rest position = B clamped to C. Naturally produces overshoot and oscillation.
+ * @param a     pointer to an animation
+ * @return      the current value to set
+ */
+lv_value_precise_t lv_anim_path_scroll_throw_spring(const lv_anim_t * a);
+
+/**
+ * Convergence check for spring scroll throw: finished when position error < 1px.
+ * @param a     pointer to an animation
+ * @return      true if the animation should be considered finished
+ */
+bool lv_anim_path_scroll_throw_spring_is_finished(const lv_anim_t * a);
+
+/**
+ * Parameterized friction→spring scroll throw path.
+ * Same as lv_anim_path_scroll_throw_spring but reads spring parameters from
+ * a->parameter.ease: p1 = omega (natural frequency), p2 = zeta (damping ratio).
+ * Supports both underdamped (zeta<1, oscillation) and overdamped (zeta>=1, no oscillation).
+ * @param a     pointer to an animation
+ * @return      the current value to set
+ */
+lv_value_precise_t lv_anim_path_scroll_throw_spring_param(const lv_anim_t * a);
+
+/**
+ * Convergence-based finish check for parameterized spring.
+ * @param a     pointer to an animation
+ * @return      true if the animation should be considered finished
+ */
+bool lv_anim_path_scroll_throw_spring_param_is_finished(const lv_anim_t * a);
 
 #if LV_USE_EXT_DATA
 /**
